@@ -171,22 +171,13 @@ jobs:
         run: |
           (cd build/linux && zip -qq -r ../../counterstrikesharp-with-runtime-linux-${{ needs.setup.outputs.gitversion_semver }}.zip *)
       
-      - name: Generate a changelog
-        uses: orhun/git-cliff-action@v4
-        id: git-cliff
-        with:
-            config: cliff.toml
-            args: --current -s footer
-
       - name: Release
         id: release
         uses: softprops/action-gh-release@v1
         with:
           append_body: true
           body: |
-            ${{ steps.git-cliff.outputs.content }}
-
-            Please refer to [CHANGELOG.md](https://github.com/roflmuffin/CounterStrikeSharp/blob/${{ github.ref_name }}/CHANGELOG.md) for details.
+            CSS Debug test build
           files: |
             counterstrikesharp-linux-${{ needs.setup.outputs.gitversion_semver }}.zip
             counterstrikesharp-with-runtime-linux-${{ needs.setup.outputs.gitversion_semver }}.zip
