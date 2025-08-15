@@ -105,7 +105,7 @@ jobs:
       - name: Upload dotnet test results
         uses: actions/upload-artifact@v4
         with:
-          name: test-results-${{ needs.setup.outputs.gitversion_semver }}
+          name: ${{ matrix.build_type == 'Debug' && 'debug' || 'release' }}-test-results-${{ needs.setup.outputs.gitversion_semver }}
           path: TestResults-${{ needs.setup.outputs.gitversion_semver }}
         if: ${{ always() }}
 
