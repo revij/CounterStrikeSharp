@@ -1,8 +1,5 @@
 name: Build & Publish
 
-env:
-  BUILD_TYPE: Debug
-
 # Remove default permissions of GITHUB_TOKEN for security
 # https://docs.github.com/en/actions/using-jobs/assigning-permissions-to-jobs
 permissions: {}
@@ -44,6 +41,9 @@ jobs:
   build_linux:
     needs: setup
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        build_type: [Debug, Release]
     # Could not figure out how to run in a container only on some matrix paths, so I've split it out into its own build.
     container:
       image: registry.gitlab.steamos.cloud/steamrt/sniper/sdk:latest
@@ -62,8 +62,8 @@ jobs:
         run: |
           mkdir -p build
           cd build
-          cmake -G Ninja -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} ..
-          cmake --build . --config ${{env.BUILD_TYPE}} -- -j16
+          cmake -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} ..
+          cmake --build . --config ${{ matrix.build_type }} -- -j16
 
       - name: Clean build directory
         run: |
@@ -72,7 +72,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: counterstrikesharp-linux-${{ needs.setup.outputs.gitversion_semver }}
+          name: ${{ matrix.build_type == 'Debug' && 'debug' || 'release' }}-counterstrikesharp-linux-${{ needs.setup.outputs.gitversion_semver }}
           path: build/output/
 
   build_managed:
@@ -80,6 +80,9 @@ jobs:
     permissions:
       contents: write
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        build_type: [Debug, Release]
     steps:
       - name: Prepare env
         shell: bash
@@ -108,13 +111,13 @@ jobs:
 
       - name: Publish artifacts
         run: |
-          dotnet publish -c Release \
+          dotnet publish -c ${{ matrix.build_type }} \
           /p:Version=${{ needs.setup.outputs.gitversion_semver }} \
           /p:AssemblyVersion=${{ needs.setup.outputs.gitversion_assemblySemver }} \
           /p:InformationalVersion=${{ needs.setup.outputs.gitversion_informationalversion }} \
           managed/CounterStrikeSharp.API
           
-          dotnet pack -c Release \
+          dotnet pack -c ${{ matrix.build_type }} \
           /p:Version=${{ needs.setup.outputs.gitversion_semver }} \
           /p:AssemblyVersion=${{ needs.setup.outputs.gitversion_assemblySemver }} \
           /p:InformationalVersion=${{ needs.setup.outputs.gitversion_informationalversion }} \
@@ -122,8 +125,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: counterstrikesharp-api-${{ needs.setup.outputs.gitversion_semver }}
-          path: managed/CounterStrikeSharp.API/bin/Release
+          name: ${{ matrix.build_type == 'Debug' && 'debug' || 'release' }}-counterstrikesharp-api-${{ needs.setup.outputs.gitversion_semver }}
+          path: managed/CounterStrikeSharp.API/bin/${{ matrix.build_type }}
 
   publish:
     if: ${{ github.event_name == 'push' }}
@@ -131,6 +134,9 @@ jobs:
       contents: write
     needs: ["setup", "build_linux", "build_managed"]
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        build_type: [Debug, Release]
     steps:
       - name: Prepare env
         shell: bash
@@ -143,12 +149,12 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: counterstrikesharp-linux-${{ needs.setup.outputs.gitversion_semver }}
+          name: ${{ matrix.build_type == 'Debug' && 'debug' || 'release' }}-counterstrikesharp-linux-${{ needs.setup.outputs.gitversion_semver }}
           path: build/linux
 
       - uses: actions/download-artifact@v4
         with:
-          name: counterstrikesharp-api-${{ needs.setup.outputs.gitversion_semver }}
+          name: ${{ matrix.build_type == 'Debug' && 'debug' || 'release' }}-counterstrikesharp-api-${{ needs.setup.outputs.gitversion_semver }}
           path: build/api
 
       # TODO: This stuff should really be in a matrix
@@ -159,7 +165,7 @@ jobs:
 
       - name: Zip Builds
         run: |
-          (cd build/linux && zip -qq -r ../../counterstrikesharp-linux-${{ needs.setup.outputs.gitversion_semver }}.zip *)
+          (cd build/linux && zip -qq -r ../../${{ matrix.build_type == 'Debug' && 'debug' || 'release' }}-counterstrikesharp-linux-${{ needs.setup.outputs.gitversion_semver }}.zip *)
 
       - name: Add dotnet runtime
         run: |
@@ -167,9 +173,9 @@ jobs:
           curl -s -L https://download.visualstudio.microsoft.com/download/pr/c1371dc2-eed2-47be-9af3-ae060dbe3c7d/bd509e0a87629764ed47608466d183e6/aspnetcore-runtime-8.0.3-linux-x64.tar.gz \
           | tar xvz -C build/linux/addons/counterstrikesharp/dotnet
 
-      - name: Zip Builds
+      - name: Zip Builds with Runtime
         run: |
-          (cd build/linux && zip -qq -r ../../counterstrikesharp-with-runtime-linux-${{ needs.setup.outputs.gitversion_semver }}.zip *)
+          (cd build/linux && zip -qq -r ../../${{ matrix.build_type == 'Debug' && 'debug' || 'release' }}-counterstrikesharp-with-runtime-linux-${{ needs.setup.outputs.gitversion_semver }}.zip *)
       
       - name: Release
         id: release
@@ -177,7 +183,7 @@ jobs:
         with:
           append_body: true
           body: |
-            CSS Debug test build
+            CSS ${{ matrix.build_type }} build
           files: |
-            counterstrikesharp-linux-${{ needs.setup.outputs.gitversion_semver }}.zip
-            counterstrikesharp-with-runtime-linux-${{ needs.setup.outputs.gitversion_semver }}.zip
+            ${{ matrix.build_type == 'Debug' && 'debug' || 'release' }}-counterstrikesharp-linux-${{ needs.setup.outputs.gitversion_semver }}.zip
+            ${{ matrix.build_type == 'Debug' && 'debug' || 'release' }}-counterstrikesharp-with-runtime-linux-${{ needs.setup.outputs.gitversion_semver }}.zip
