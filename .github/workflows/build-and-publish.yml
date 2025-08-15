@@ -1,7 +1,7 @@
 name: Build & Publish
 
 env:
-  BUILD_TYPE: Release
+  BUILD_TYPE: Debug
 
 # Remove default permissions of GITHUB_TOKEN for security
 # https://docs.github.com/en/actions/using-jobs/assigning-permissions-to-jobs
@@ -40,52 +40,6 @@ jobs:
       uses: gittools/actions/gitversion/execute@v1
       with:
         useConfigFile: true
-
-  build_windows:
-    needs: setup
-    runs-on: windows-latest
-    steps:
-      - name: Prepare env
-        shell: bash
-        run: | 
-          echo "GITHUB_SHA_SHORT=${GITHUB_SHA::7}" >> $GITHUB_ENV
-          echo "SEMVER=${{ needs.setup.outputs.gitversion_semver }}" >> $GITHUB_ENV
-
-      - name: Visual Studio environment
-        shell: cmd
-        run: |
-          :: See https://github.com/microsoft/vswhere/wiki/Find-VC
-          for /f "usebackq delims=*" %%i in (`vswhere -latest -property installationPath`) do (
-            call "%%i"\Common7\Tools\vsdevcmd.bat -arch=x64 -host_arch=x64
-          )
-
-          :: Loop over all environment variables and make them global.
-          for /f "delims== tokens=1,2" %%a in ('set') do (
-            echo>>"%GITHUB_ENV%" %%a=%%b
-          )
-
-      - uses: actions/checkout@v4
-        with:
-          submodules: "recursive"
-
-      - name: Build
-        run: |
-          mkdir -p build
-          cd build
-          cmake -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} ..
-          cmake --build . --config ${{env.BUILD_TYPE}} -- /m:16
-
-      - name: Clean build directory
-        run: |
-          mkdir -p build/addons/counterstrikesharp/bin/win64
-          mv build/${{env.BUILD_TYPE}}/*.dll build/addons/counterstrikesharp/bin/win64
-          mkdir build/output/
-          mv build/addons build/output
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: counterstrikesharp-windows-${{ needs.setup.outputs.gitversion_semver }}
-          path: build/output/
 
   build_linux:
     needs: setup
@@ -175,7 +129,7 @@ jobs:
     if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.repository == 'roflmuffin/CounterStrikeSharp' }}
     permissions:
       contents: write
-    needs: ["setup", "build_linux", "build_windows", "build_managed"]
+    needs: ["setup", "build_linux", "build_managed"]
     runs-on: ubuntu-latest
     steps:
       - name: Prepare env
@@ -186,11 +140,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: counterstrikesharp-windows-${{ needs.setup.outputs.gitversion_semver }}
-          path: build/windows
 
       - uses: actions/download-artifact@v4
         with:
@@ -206,14 +155,11 @@ jobs:
       - name: Add API to Artifacts
         run: |
           mkdir -p build/linux/addons/counterstrikesharp/api
-          mkdir -p build/windows/addons/counterstrikesharp/api
           cp -r build/api/net8.0/publish/* build/linux/addons/counterstrikesharp/api
-          cp -r build/api/net8.0/publish/* build/windows/addons/counterstrikesharp/api
 
       - name: Zip Builds
         run: |
           (cd build/linux && zip -qq -r ../../counterstrikesharp-linux-${{ needs.setup.outputs.gitversion_semver }}.zip *)
-          (cd build/windows && zip -qq -r ../../counterstrikesharp-windows-${{ needs.setup.outputs.gitversion_semver }}.zip *)
 
       - name: Add dotnet runtime
         run: |
@@ -221,14 +167,9 @@ jobs:
           curl -s -L https://download.visualstudio.microsoft.com/download/pr/c1371dc2-eed2-47be-9af3-ae060dbe3c7d/bd509e0a87629764ed47608466d183e6/aspnetcore-runtime-8.0.3-linux-x64.tar.gz \
           | tar xvz -C build/linux/addons/counterstrikesharp/dotnet
 
-          mkdir -p build/windows/addons/counterstrikesharp/dotnet
-          curl -s -L https://download.visualstudio.microsoft.com/download/pr/086d1dd6-57a5-437a-a1ef-549cf702fb48/dd4a8fe6c53a1016a414d6f2925c1323/aspnetcore-runtime-8.0.3-win-x64.zip -o dotnet.zip
-          unzip -qq dotnet.zip -d build/windows/addons/counterstrikesharp/dotnet
-
       - name: Zip Builds
         run: |
           (cd build/linux && zip -qq -r ../../counterstrikesharp-with-runtime-linux-${{ needs.setup.outputs.gitversion_semver }}.zip *)
-          (cd build/windows && zip -qq -r ../../counterstrikesharp-with-runtime-windows-${{ needs.setup.outputs.gitversion_semver }}.zip *)
       
       - name: Generate a changelog
         uses: orhun/git-cliff-action@v4
@@ -247,24 +188,5 @@ jobs:
 
             Please refer to [CHANGELOG.md](https://github.com/roflmuffin/CounterStrikeSharp/blob/${{ github.ref_name }}/CHANGELOG.md) for details.
           files: |
-            counterstrikesharp-windows-${{ needs.setup.outputs.gitversion_semver }}.zip
-            counterstrikesharp-with-runtime-windows-${{ needs.setup.outputs.gitversion_semver }}.zip
             counterstrikesharp-linux-${{ needs.setup.outputs.gitversion_semver }}.zip
             counterstrikesharp-with-runtime-linux-${{ needs.setup.outputs.gitversion_semver }}.zip
-
-      - name: Publish NuGet package
-        run: |
-          dotnet nuget push build/api/CounterStrikeSharp.API.${{ needs.setup.outputs.gitversion_semver }}.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
-          dotnet nuget push build/api/CounterStrikeSharp.API.${{ needs.setup.outputs.gitversion_semver }}.snupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
-
-      - name: Send Notification to Discord
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-        uses: Ilshidur/action-discord@0.3.2
-        with:
-          args: |
-            A new release of CS# has been tagged [v${{ needs.setup.outputs.gitversion_semver }}](${{ steps.release.outputs.url }})
-
-            ${{ steps.git-cliff.outputs.content }}
-
-            Please refer to [CHANGELOG.md](https://github.com/roflmuffin/CounterStrikeSharp/blob/${{ github.ref_name }}/CHANGELOG.md) for details.
