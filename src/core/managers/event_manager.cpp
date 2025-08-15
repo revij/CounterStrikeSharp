@@ -217,8 +217,11 @@ bool EventManager::OnFireEvent(IGameEvent* pEvent, bool bDontBroadcast)
             // VPROF_BUDGET("CS#::OnFireEvent", "CS# Event Hooks");
             for (auto fnMethodToCall : pCallback->GetFunctions())
             {
-                if (!fnMethodToCall) continue;
-                
+                if (!fnMethodToCall)
+                {
+                    continue;
+                }
+
                 // Enhanced validation: check for corrupted pointers
                 uintptr_t ptrValue = reinterpret_cast<uintptr_t>(fnMethodToCall);
                 if (ptrValue < 0x1000 || (ptrValue >> 56) != 0)
@@ -226,7 +229,7 @@ bool EventManager::OnFireEvent(IGameEvent* pEvent, bool bDontBroadcast)
                     CSSHARP_CORE_ERROR("Corrupted function pointer detected in event '{}', pointer: 0x{:x}", szName, ptrValue);
                     continue;
                 }
-                
+
                 fnMethodToCall(&pCallback->ScriptContextStruct());
 
                 auto result = pCallback->ScriptContext().GetResult<HookResult>();
