@@ -53,6 +53,7 @@ class CallbackManager : public GlobalClass
 {
   public:
     CallbackManager();
+    ~CallbackManager();
 
     ScriptCallback* CreateCallback(const char* szName);
     ScriptCallback* FindCallback(const char* szName);
@@ -60,6 +61,7 @@ class CallbackManager : public GlobalClass
     bool TryAddFunction(const char* szName, CallbackT fnCallable);
     bool TryRemoveFunction(const char* szName, CallbackT fnCallable);
     void PrintCallbackDebug();
+    void ClearAllCallbacks();
 
   private:
     std::vector<ScriptCallback*> m_managed;

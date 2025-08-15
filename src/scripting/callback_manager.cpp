@@ -17,6 +17,7 @@
 #include "scripting/callback_manager.h"
 
 #include <algorithm>
+#include <cstdint>
 
 #include "core/log.h"
 #include "vprof.h"
@@ -32,13 +33,45 @@ ScriptCallback::ScriptCallback(const char* szName) : m_root_context(fxNativeCont
 
 ScriptCallback::~ScriptCallback() { m_functions.clear(); }
 
-void ScriptCallback::AddListener(CallbackT fnPluginFunction) { m_functions.push_back(fnPluginFunction); }
+void ScriptCallback::AddListener(CallbackT fnPluginFunction) 
+{ 
+    if (!fnPluginFunction)
+    {
+        CSSHARP_CORE_ERROR("Attempted to add null function pointer to callback '{}'", m_name);
+        return;
+    }
+
+    // Basic corruption check for new listeners
+    uintptr_t ptrValue = reinterpret_cast<uintptr_t>(fnPluginFunction);
+    if (ptrValue < 0x1000 || (ptrValue >> 56) != 0)
+    {
+        CSSHARP_CORE_ERROR("Attempted to add corrupted function pointer 0x{:x} to callback '{}'", ptrValue, m_name);
+        return;
+    }
+
+    m_functions.push_back(fnPluginFunction);
+    CSSHARP_CORE_TRACE("Added function pointer 0x{:x} to callback '{}'", ptrValue, m_name);
+}
 
 bool ScriptCallback::RemoveListener(CallbackT fnPluginFunction)
 {
+    if (!fnPluginFunction)
+    {
+        CSSHARP_CORE_WARN("Attempted to remove null function pointer from callback '{}'", m_name);
+        return false;
+    }
+
     size_t nOriginalSize = m_functions.size();
     m_functions.erase(std::ranges::remove(m_functions, fnPluginFunction).begin(), m_functions.end());
-    return m_functions.size() != nOriginalSize;
+    
+    bool removed = m_functions.size() != nOriginalSize;
+    if (removed)
+    {
+        CSSHARP_CORE_TRACE("Removed function pointer 0x{:x} from callback '{}'", 
+                          reinterpret_cast<uintptr_t>(fnPluginFunction), m_name);
+    }
+    
+    return removed;
 }
 
 bool ScriptCallback::IsContextSafe()
@@ -67,24 +100,37 @@ void ScriptCallback::Execute(bool bResetContext)
 
     // VPROF_BUDGET(m_profile_name.c_str(), "CS# Script Callbacks");
 
-    for (size_t nI = 0; nI < m_functions.size(); ++nI)
+    // Create a copy of the function list to avoid issues with concurrent modification during plugin unload
+    std::vector<CallbackT> functionsCopy = m_functions;
+
+    for (size_t nI = 0; nI < functionsCopy.size(); ++nI)
     {
-        if (auto fnMethodToCall = m_functions[nI])
+        auto fnMethodToCall = functionsCopy[nI];
+        
+        // Enhanced validation: check for null and potentially corrupted pointers
+        if (!fnMethodToCall)
         {
-            try
-            {
-                fnMethodToCall(&ScriptContextStruct());
-            }
-            catch (...)
-            {
-                ScriptContext().ThrowNativeError("Exception in callback execution");
-                CSSHARP_CORE_ERROR("Exception thrown inside callback '{}', index {}", m_name, nI);
-            }
-        }
-        else
-        {
-            ScriptContext().ThrowNativeError("Null listener in callback");
             CSSHARP_CORE_ERROR("Null function pointer in callback '{}', index {}", m_name, nI);
+            continue;
+        }
+
+        // Basic corruption check: ensure pointer is within reasonable bounds
+        // This catches obviously corrupted pointers like 0x180000001400000
+        uintptr_t ptrValue = reinterpret_cast<uintptr_t>(fnMethodToCall);
+        if (ptrValue < 0x1000 || (ptrValue >> 56) != 0)  // Check for very low addresses and high bits set
+        {
+            CSSHARP_CORE_ERROR("Corrupted function pointer detected in callback '{}', index {}, pointer: 0x{:x}", m_name, nI, ptrValue);
+            continue;
+        }
+
+        try
+        {
+            fnMethodToCall(&ScriptContextStruct());
+        }
+        catch (...)
+        {
+            ScriptContext().ThrowNativeError("Exception in callback execution");
+            CSSHARP_CORE_ERROR("Exception thrown inside callback '{}', index {}", m_name, nI);
         }
     }
 
@@ -97,6 +143,11 @@ void ScriptCallback::Execute(bool bResetContext)
 void ScriptCallback::Reset() { ScriptContext().Reset(); }
 
 CallbackManager::CallbackManager() = default;
+
+CallbackManager::~CallbackManager()
+{
+    ClearAllCallbacks();
+}
 
 ScriptCallback* CallbackManager::CreateCallback(const char* szName)
 {
@@ -122,12 +173,29 @@ ScriptCallback* CallbackManager::FindCallback(const char* szName)
 
 void CallbackManager::ReleaseCallback(ScriptCallback* pCallback)
 {
+    if (!pCallback)
+    {
+        CSSHARP_CORE_WARN("Attempted to release null callback pointer");
+        return;
+    }
+
+    CSSHARP_CORE_TRACE("Releasing callback '{}'", pCallback->GetName());
+    
     auto I = std::ranges::remove_if(m_managed, [pCallback](const ScriptCallback* pI) {
         return pCallback == pI;
     }).begin();
 
-    if (I != m_managed.end()) m_managed.erase(I, m_managed.end());
-    delete pCallback;
+    if (I != m_managed.end()) 
+    {
+        m_managed.erase(I, m_managed.end());
+        delete pCallback;
+        CSSHARP_CORE_TRACE("Successfully released callback");
+    }
+    else
+    {
+        CSSHARP_CORE_WARN("Callback '{}' not found in managed list during release", pCallback->GetName());
+        delete pCallback; // Delete anyway to prevent memory leak
+    }
 }
 
 bool CallbackManager::TryAddFunction(const char* szName, CallbackT fnCallable)
@@ -149,6 +217,24 @@ bool CallbackManager::TryRemoveFunction(const char* szName, CallbackT fnCallable
     }
 
     return false;
+}
+
+void CallbackManager::ClearAllCallbacks()
+{
+    CSSHARP_CORE_TRACE("Clearing all {} managed callbacks", m_managed.size());
+    
+    // Clear all callbacks safely
+    for (auto* pCallback : m_managed)
+    {
+        if (pCallback)
+        {
+            CSSHARP_CORE_TRACE("Clearing callback '{}'", pCallback->GetName());
+            delete pCallback;
+        }
+    }
+    
+    m_managed.clear();
+    CSSHARP_CORE_TRACE("All callbacks cleared");
 }
 
 void CallbackManager::PrintCallbackDebug()
@@ -176,8 +262,16 @@ CallbackPair::CallbackPair(bool bNoCallbacks)
 
 CallbackPair::~CallbackPair()
 {
-    globals::callbackManager.ReleaseCallback(pre);
-    globals::callbackManager.ReleaseCallback(post);
+    if (pre)
+    {
+        globals::callbackManager.ReleaseCallback(pre);
+        pre = nullptr;
+    }
+    if (post)
+    {
+        globals::callbackManager.ReleaseCallback(post);
+        post = nullptr;
+    }
 }
 
 } // namespace counterstrikesharp
